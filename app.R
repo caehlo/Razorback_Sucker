@@ -1,9 +1,7 @@
 library(shiny)
 library(ggplot2)
-library(readr)
 library(dplyr)
 library(purrr)
-library(caret)
 library(DT)
 library(lubridate)
 model <- readRDS("XYTE_reduced_model.rds")
@@ -14,31 +12,46 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       h3('Upload Stocking Files'),
-      fileInput("file", "Upload", accept = c(".csv"), multiple = TRUE),
-      checkboxInput("header", "Header", TRUE),
-      radioButtons("sep", "Separator", choices = c(Comma = ",", Semicolon = ";", Tab = "\t"), selected = ","),
-      tags$p("Note: Please insure you have SPECIES_ID, TL, MSCP_REACH, and RELEASE_DATE column headings before uploading."),
-      h3('Create hypothetical data'),
-      selectInput("species_input", "Species:", choices = c("XYTE", "GIEL"), selected = "XYTE"),
-      numericInput("mean_input", "Mean TL:", value = 0),
-      numericInput("size_input", "Number Stocked:", value = 1000, min = 1),
-      textInput("release_date_input", "Release Date:", value = "YYYY-MM-DD"),
-      selectInput("mscp_reach_input", "MSCP Reach:", choices = c("2", "3", "4"), selected = "2"),
-      actionButton("create_button", "Create Mock Data")
+      checkboxInput("upload_checkbox", "Upload Data", FALSE),
+      conditionalPanel(
+        condition = "input.upload_checkbox == true",
+        fileInput("file", "Upload", accept = c(".csv"), multiple = TRUE),
+        tags$p("Note: Please ensure you have SPECIES_ID, TL, MSCP_REACH, and RELEASE_DATE column headings before uploading.")
+      ),
+      conditionalPanel(
+        condition = "input.upload_checkbox == false",
+        checkboxInput("mock_data_checkbox", "Use Mock Data", FALSE),
+        conditionalPanel(
+          condition = "input.mock_data_checkbox == true",
+          h3('Create hypothetical data'),
+          selectInput("species_input", "Species:", choices = c("XYTE", "GIEL"), selected = "XYTE"),
+          numericInput("mean_input", "Mean TL:", value = 0),
+          numericInput("size_input", "Number Stocked:", value = 1000, min = 1),
+          textInput("release_date_input", "Release Date:", value = "YYYY-MM-DD"),
+          selectInput("mscp_reach_input", "MSCP Reach:", choices = c("2", "3", "4"), selected = "2")
+        )
+      ),
+      actionButton("submit_button", "Submit")
     ),
     mainPanel(
       dataTableOutput('monte_carlo_table'),
       plotOutput("prediction_plot"),
-      plotOutput("prediction_plot2"),
+      plotOutput("prediction_plot2")
     )
   )
 )
 
 # Define server
-server <- function(input, output) {
-  # Create dataframe based on user input or uploaded CSV file
-  data <- eventReactive(input$create_button,{
-    if (input$create_button) {
+server <- function(input, output, session) {
+  data <- reactiveVal(NULL)
+  
+  observeEvent(input$submit_button, {
+    if (!input$mock_data_checkbox) {
+      req(input$file)
+      files <- input$file
+      import <- lapply(files$datapath, function(path) read.csv(path, header = TRUE))
+      data(dplyr::bind_rows(import))
+    } else {
       set.seed(123)
       mean <- input$mean_input
       std_dev <- 48.2
@@ -53,19 +66,12 @@ server <- function(input, output) {
         )
       )
       
-      df <- data.frame(
+      data(data.frame(
         TL = thresholds,
         RELEASE_DATE = RELEASE_DATE,
         MSCP_REACH = input$mscp_reach_input,
         SPECIES_ID = input$species_input
-      )
-      
-      return(df)
-    } else {
-      req(input$file)
-      files <- input$file
-      import <- lapply(files$datapath, function(path) read.csv(path, header = input$header, sep = input$sep))
-      dplyr::bind_rows(import)
+      ))
     }
   })
   
@@ -91,7 +97,6 @@ server <- function(input, output) {
     merged_data <- merged_data()
     predictions <- predict(model, newdata = merged_data, type = "response")
     merged_data <- cbind(merged_data, predictions)
-    print(merged_data)
     merged_data
   })
   
@@ -127,17 +132,15 @@ server <- function(input, output) {
   table_data <- reactive({
     req(prediction(), mc_results())
     proportion_survived <- as.data.frame(rowMeans(mc_results()))
-    colnames(proportion_survived) <- "prob"  # Assign column name "prob"
-    print(proportion_survived)
+    colnames(proportion_survived) <- "prob"
     confidence_level <- 0.95
     conf_intervals <- t(apply(mc_results(), 1, function(x) {
       prop.test(sum(x), length(x), conf.level = confidence_level)$conf.int
     }))
-    print(confidence_level)
     MC_final <- cbind(prediction()$TL, prediction()$MSCP_REACH, proportion_survived, conf_intervals)
     colnames(MC_final) <- c('TL', 'Reach', 'prob', 'LCI', 'UCI')
     MC_estimate <- MC_final %>% group_by(Reach) %>% 
-      summarize(Stocked = n(), Est_Surv = round(sum(prob), 2), LCI = round(sum(LCI), 2), UCI = round(sum(UCI), 2)) %>% 
+      summarize(Stocked = n(), Mean_TL = round(mean(TL), 2), Est_Surv = round(sum(prob), 2), LCI = round(sum(LCI), 2), UCI = round(sum(UCI), 2)) %>% 
       mutate('Est. Surv. (95% CI)' = paste(Est_Surv, '(',LCI,'-',UCI,')')) %>%
       mutate(Perc_Surv = Est_Surv/Stocked) %>% mutate(Perc_Surv = round(Perc_Surv, 2)) %>%
       select(-Est_Surv, -LCI, -UCI)
