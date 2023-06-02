@@ -8,7 +8,8 @@ model <- readRDS("XYTE_reduced_model.rds")
 
 # Define UI
 ui <- fluidPage(
-  titlePanel("Fish Encounter Probability Prediction"),
+  titlePanel("Encounter Probability Predictions"),
+  tags$p("Probability of detection 1 year post-stocking for Razorback Sucker and 90 days post-stocking for Bonytail"),
   sidebarLayout(
     sidebarPanel(
       h3('Upload Stocking Files'),
@@ -24,11 +25,13 @@ ui <- fluidPage(
         conditionalPanel(
           condition = "input.mock_data_checkbox == true",
           h3('Create hypothetical data'),
-          selectInput("species_input", "Species:", choices = c("XYTE", "GIEL"), selected = "XYTE"),
+          selectInput("species_input", "Species:", choices = c("XYTE"), selected = "XYTE"),
           numericInput("mean_input", "Mean TL:", value = 0),
           numericInput("size_input", "Number Stocked:", value = 1000, min = 1),
           textInput("release_date_input", "Release Date:", value = "YYYY-MM-DD"),
-          selectInput("mscp_reach_input", "MSCP Reach:", choices = c("2", "3", "4"), selected = "2")
+          numericInput("mscp_reach_2_input", "Percent stocked in Reach 2:", value = 50, min = 0, max = 100),
+          numericInput("mscp_reach_3_input", "Percent stocked in Reach 3:", value = 30, min = 0, max = 100),
+          numericInput("mscp_reach_4_input", "Percent stocked in Reach 4:", value = 20, min = 0, max = 100)
         )
       ),
       actionButton("submit_button", "Submit")
@@ -57,7 +60,7 @@ server <- function(input, output, session) {
       std_dev <- 48.2
       size <- input$size_input
       thresholds <- rlnorm(size, meanlog = log(mean), sdlog = log(1 + std_dev / mean))
-      thresholds <- pmax(pmin(thresholds, 500), 300)
+      thresholds <- pmax(pmin(thresholds, 600), 300)
       RELEASE_DATE <- input$release_date_input
       validate(
         need(
@@ -69,7 +72,7 @@ server <- function(input, output, session) {
       data(data.frame(
         TL = thresholds,
         RELEASE_DATE = RELEASE_DATE,
-        MSCP_REACH = input$mscp_reach_input,
+        MSCP_REACH = sample(c(2, 3, 4), size, replace = TRUE, prob = c(input$mscp_reach_2_input, input$mscp_reach_3_input, input$mscp_reach_4_input)),
         SPECIES_ID = input$species_input
       ))
     }
@@ -141,7 +144,7 @@ server <- function(input, output, session) {
     colnames(MC_final) <- c('TL', 'Reach', 'prob', 'LCI', 'UCI')
     MC_estimate <- MC_final %>% group_by(Reach) %>% 
       summarize(Stocked = n(), Mean_TL = round(mean(TL), 2), Est_Surv = round(sum(prob), 2), LCI = round(sum(LCI), 2), UCI = round(sum(UCI), 2)) %>% 
-      mutate('Est. Surv. (95% CI)' = paste(Est_Surv, '(',LCI,'-',UCI,')')) %>%
+      mutate('# Surviving (95% CI)' = paste(Est_Surv, '(',LCI,'-',UCI,')')) %>%
       mutate(Perc_Surv = Est_Surv/Stocked) %>% mutate(Perc_Surv = round(Perc_Surv, 2)) %>%
       select(-Est_Surv, -LCI, -UCI)
     MC_estimate
